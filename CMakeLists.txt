@@ -167,6 +167,25 @@ velox_resolve_dependency(Boost 1.77.0 COMPONENTS ${BOOST_INCLUDE_LIBRARIES})
 velox_set_source(folly)
 velox_resolve_dependency(folly)
 
+# Host compatibility: Folly turns io_uring on whenever <liburing.h> is on the include
+# path, and a host liburing newer than this Folly redeclares types Folly defines. With
+# Folly built from source, its guard is switched off in the fetched copy; a system Folly
+# is left alone. Rewritten only when it changes, so a reconfigure rebuilds nothing.
+if(DEFINED folly_SOURCE_DIR AND EXISTS "${folly_SOURCE_DIR}/folly/io/async/Liburing.h")
+  set(_nimble_liburing "${folly_SOURCE_DIR}/folly/io/async/Liburing.h")
+  file(READ "${_nimble_liburing}" _nimble_liburing_old)
+  string(
+    REPLACE
+      "#if defined(__linux__) && __has_include(<liburing.h>)"
+      "#if 0 // io_uring off: a host liburing.h redeclares types this Folly defines"
+      _nimble_liburing_new
+      "${_nimble_liburing_old}"
+  )
+  if(NOT _nimble_liburing_new STREQUAL _nimble_liburing_old)
+    file(WRITE "${_nimble_liburing}" "${_nimble_liburing_new}")
+  endif()
+endif()
+
 velox_set_source(absl)
 velox_resolve_dependency(absl)
 
@@ -232,3 +251,31 @@ add_subdirectory(dwio/nimble/tablet)
 add_subdirectory(dwio/nimble/velox)
 add_subdirectory(dwio/nimble/writer)
 add_subdirectory(dwio/nimble/serializer)
+
+# Host compatibility: the FSST that Velox fetches uses uint8_t and friends without
+# including <cstdint>, which GCC 16's standard headers no longer pull in transitively.
+if(TARGET fsst)
+  target_compile_options(fsst PRIVATE -include cstdint)
+endif()
+
+# Host compatibility: with VELOX_MONO_LIBRARY=OFF, velox_connector and velox_expression
+# link these two exec-layer libraries, but this build never configures velox/exec, which
+# declares them. Declared here from their upstream sources and dependency lists.
+set(_nimble_velox_exec "${PROJECT_SOURCE_DIR}/velox/velox/exec")
+if(NOT TARGET velox_exec_spill_stats)
+  add_library(velox_exec_spill_stats STATIC "${_nimble_velox_exec}/SpillStats.cpp")
+  target_link_libraries(
+    velox_exec_spill_stats
+    PUBLIC velox_common_base velox_file Folly::folly
+  )
+endif()
+if(NOT TARGET velox_trace)
+  add_library(
+    velox_trace
+    STATIC "${_nimble_velox_exec}/trace/Trace.cpp" "${_nimble_velox_exec}/trace/TraceUtil.cpp"
+  )
+  target_link_libraries(
+    velox_trace
+    PUBLIC velox_common_base velox_exception velox_file velox_core velox_type velox_vector
+  )
+endif()
